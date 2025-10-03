@@ -1,5 +1,5 @@
-import 'package:flutter/foundation.dart';
 // lib/screens/image_detail_screen.dart
+import 'package:flutter/foundation.dart';
 import 'package:async_wallpaper/async_wallpaper.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -20,7 +20,6 @@ import '../models/photo_model.dart';
 
 class ImageDetailScreen extends StatefulWidget {
   final Photo photo;
-
   const ImageDetailScreen({Key? key, required this.photo}) : super(key: key);
 
   @override
@@ -29,10 +28,16 @@ class ImageDetailScreen extends StatefulWidget {
 
 class _ImageDetailScreenState extends State<ImageDetailScreen>
     with TickerProviderStateMixin {
+
+  // Animation Controllers
   late AnimationController _fadeController;
   late AnimationController _slideController;
+  late AnimationController _scaleController;
+  late AnimationController _rotateController;
   late Animation<double> _fadeAnimation;
   late Animation<Offset> _slideAnimation;
+  late Animation<double> _scaleAnimation;
+  late Animation<double> _rotateAnimation;
 
   // Video player controller
   VideoPlayerController? _videoController;
@@ -41,7 +46,6 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
   bool _showControls = true;
   bool _isPlaying = false;
   bool _videoLoadFailed = false;
-
   bool _isLoading = true;
   bool _isDownloading = false;
   double _downloadProgress = 0.0;
@@ -64,24 +68,45 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
 
   void _setupAnimations() {
     _fadeController = AnimationController(
-      duration: const Duration(milliseconds: 500),
+      duration: const Duration(milliseconds: 800),
       vsync: this,
     );
+
     _slideController = AnimationController(
+      duration: const Duration(milliseconds: 600),
+      vsync: this,
+    );
+
+    _scaleController = AnimationController(
       duration: const Duration(milliseconds: 400),
+      vsync: this,
+    );
+
+    _rotateController = AnimationController(
+      duration: const Duration(milliseconds: 300),
       vsync: this,
     );
 
     _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
       CurvedAnimation(parent: _fadeController, curve: Curves.easeOut),
     );
+
     _slideAnimation = Tween<Offset>(
       begin: const Offset(0, 0.1),
       end: Offset.zero,
-    ).animate(CurvedAnimation(parent: _slideController, curve: Curves.easeOut));
+    ).animate(CurvedAnimation(parent: _slideController, curve: Curves.easeOutCubic));
+
+    _scaleAnimation = Tween<double>(begin: 0.9, end: 1.0).animate(
+      CurvedAnimation(parent: _scaleController, curve: Curves.easeOutBack),
+    );
+
+    _rotateAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(parent: _rotateController, curve: Curves.easeOut),
+    );
 
     _fadeController.forward();
     _slideController.forward();
+    _scaleController.forward();
   }
 
   void _initializeMedia() {
@@ -97,7 +122,6 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
       _isVideoLoading = true;
       _videoLoadFailed = false;
     });
-
     final videoUrls = _getCompatibleVideoUrls();
     _tryVideoUrls(videoUrls, 0);
   }
@@ -107,7 +131,6 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
       try {
         final videoUrl = widget.photo.src.original;
         if (videoUrl.isNotEmpty && (videoUrl.contains('.mp4') || videoUrl.contains('video'))) {
-          print('Using real Pexels video URL: $videoUrl');
           return [videoUrl];
         }
 
@@ -118,7 +141,6 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
         ].where((url) => url.isNotEmpty && (url.contains('.mp4') || url.contains('video'))).toList();
 
         if (possibleUrls.isNotEmpty) {
-          print('Found video URLs: $possibleUrls');
           return possibleUrls;
         }
       } catch (e) {
@@ -126,8 +148,7 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
       }
     }
 
-    // Fallback to sample videos
-    print('No real video URL found, using sample videos');
+    // Fallback to sample videos for demo
     return [
       'https://sample-videos.com/zip/10/mp4/SampleVideo_1280x720_1mb.mp4',
       'https://www.learningcontainer.com/wp-content/uploads/2020/05/sample-mp4-file.mp4',
@@ -146,25 +167,20 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
     }
 
     final url = urls[index];
-    print('Trying video URL: $url');
-
     _videoController?.dispose();
     _videoController = VideoPlayerController.networkUrl(Uri.parse(url))
       ..initialize().then((_) {
         if (mounted) {
-          print('Video initialized successfully: $url');
           setState(() {
             _isVideoInitialized = true;
             _isVideoLoading = false;
             _isLoading = false;
             _videoLoadFailed = false;
           });
-
           _videoController?.setLooping(true);
           _startAutoPlay();
         }
       }).catchError((error) {
-        print('Video initialization failed for $url: $error');
         _tryVideoUrls(urls, index + 1);
       });
   }
@@ -192,10 +208,7 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
   }
 
   void _toggleControls() {
-    setState(() {
-      _showControls = !_showControls;
-    });
-
+    setState(() => _showControls = !_showControls);
     if (_showControls) {
       Future.delayed(const Duration(seconds: 3), () {
         if (mounted && _showControls && _isPlaying) {
@@ -205,18 +218,89 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
     }
   }
 
-  // IMPROVED DOWNLOAD FUNCTIONALITY
+  // Enhanced download functionality with progress tracking
+  Future<void> _downloadFile() async {
+    if (kIsWeb) {
+      _showErrorSnackBar('Downloads not available on web');
+      return;
+    }
+
+    if (_isDownloading) return;
+
+    HapticFeedback.mediumImpact();
+    final hasPermission = await _checkStoragePermission();
+
+    if (!hasPermission) {
+      _showErrorSnackBar('Storage permission required');
+      return;
+    }
+
+    setState(() {
+      _isDownloading = true;
+      _downloadProgress = 0.0;
+    });
+
+    try {
+      final downloadUrl = _getDownloadUrl();
+      final fileName = _getFileName();
+
+      final request = http.Request('GET', Uri.parse(downloadUrl));
+      final streamedResponse = await request.send();
+
+      if (streamedResponse.statusCode != 200) {
+        throw Exception('Download failed: ${streamedResponse.statusCode}');
+      }
+
+      final contentLength = streamedResponse.contentLength ?? 0;
+      final bytes = <int>[];
+      int downloadedBytes = 0;
+
+      await for (final chunk in streamedResponse.stream) {
+        bytes.addAll(chunk);
+        downloadedBytes += chunk.length;
+
+        if (contentLength > 0) {
+          setState(() {
+            _downloadProgress = downloadedBytes / contentLength;
+          });
+        }
+      }
+
+      final uint8List = Uint8List.fromList(bytes);
+
+      final result = await ImageGallerySaver.saveImage(
+        uint8List,
+        name: fileName,
+        isReturnImagePathOfIOS: true,
+      );
+
+      if (result['isSuccess'] == true) {
+        await _saveToAppDirectory(uint8List, fileName);
+        _showSuccessSnackBar(
+            _photoType == 'video'
+                ? '🎬 Live wallpaper saved!'
+                : '🖼️ Wallpaper saved!',
+            result['filePath']
+        );
+      } else {
+        final filePath = await _saveToAppDirectory(uint8List, fileName);
+        _showSuccessSnackBar('Downloaded successfully', filePath);
+      }
+    } catch (e) {
+      _showErrorSnackBar('Download failed: ${e.toString()}');
+    } finally {
+      setState(() {
+        _isDownloading = false;
+        _downloadProgress = 0.0;
+      });
+    }
+  }
+
   Future<bool> _checkStoragePermission() async {
     if (Platform.isAndroid) {
       final deviceInfo = DeviceInfoPlugin();
       final androidInfo = await deviceInfo.androidInfo;
-      final sdkInt = androidInfo.version.sdkInt;
-
-      print('Android SDK: $sdkInt');
-
-      if (sdkInt >= 29) {
-        return true;
-      }
+      return androidInfo.version.sdkInt >= 29;
     }
     return true;
   }
@@ -248,108 +332,6 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
     }
   }
 
-  Future<void> _downloadFile() async {
-    if (kIsWeb) {
-      _showErrorSnackBar('This feature is not available on the web.');
-      return;
-    }
-    if (_isDownloading) return;
-
-    print('Download button tapped');
-
-    HapticFeedback.mediumImpact();
-
-    final hasPermission = await _checkStoragePermission();
-    print('Storage permission: $hasPermission');
-    if (!hasPermission) {
-      _showErrorSnackBar('Storage access not available');
-      return;
-    }
-
-    setState(() {
-      _isDownloading = true;
-      _downloadProgress = 0.0;
-    });
-
-    try {
-      final downloadUrl = _getDownloadUrl();
-      final fileName = _getFileName();
-
-      print('Downloading from: $downloadUrl');
-      print('File name: $fileName');
-
-      final request = http.Request('GET', Uri.parse(downloadUrl));
-      final streamedResponse = await request.send();
-
-      print('HTTP status code: ${streamedResponse.statusCode}');
-
-      if (streamedResponse.statusCode != 200) {
-        throw Exception('Failed to download: ${streamedResponse.statusCode}');
-      }
-
-      final contentLength = streamedResponse.contentLength ?? 0;
-      final bytes = <int>[];
-      int downloadedBytes = 0;
-
-      await for (final chunk in streamedResponse.stream) {
-        bytes.addAll(chunk);
-        downloadedBytes += chunk.length;
-
-        if (contentLength > 0) {
-          setState(() {
-            _downloadProgress = downloadedBytes / contentLength;
-          });
-        }
-      }
-
-      final uint8List = Uint8List.fromList(bytes);
-
-      Map<String, dynamic> result;
-
-      if (_photoType == 'video') {
-        result = await ImageGallerySaver.saveImage(
-          uint8List,
-          name: fileName,
-          isReturnImagePathOfIOS: true,
-        );
-      } else {
-        result = await ImageGallerySaver.saveImage(
-          uint8List,
-          name: fileName,
-          isReturnImagePathOfIOS: true,
-        );
-      }
-
-      print('Save result: $result');
-
-      if (result['isSuccess'] == true) {
-        await _saveToAppDirectory(uint8List, fileName);
-
-        _showSuccessSnackBar(
-            _photoType == 'video'
-                ? '🎬 Live wallpaper saved successfully!'
-                : '🖼️ Wallpaper saved successfully!',
-            result['filePath']
-        );
-      } else {
-        final filePath = await _saveToAppDirectory(uint8List, fileName);
-        _showSuccessSnackBar(
-            'Downloaded to app folder',
-            filePath
-        );
-      }
-
-    } catch (e) {
-      print('Download error: $e');
-      _showErrorSnackBar('Download failed: ${e.toString()}');
-    } finally {
-      setState(() {
-        _isDownloading = false;
-        _downloadProgress = 0.0;
-      });
-    }
-  }
-
   Future<String> _saveToAppDirectory(Uint8List bytes, String fileName) async {
     final directory = await getApplicationDocumentsDirectory();
     final wallhubDir = Directory(path.join(directory.path, 'WallHub'));
@@ -361,7 +343,6 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
     final filePath = path.join(wallhubDir.path, fileName);
     final file = File(filePath);
     await file.writeAsBytes(bytes);
-
     return filePath;
   }
 
@@ -407,16 +388,13 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
 
   Future<void> _openFile(String? filePath) async {
     if (filePath == null) return;
-
     try {
       if (Platform.isAndroid) {
-        final result = await OpenFilex.open(filePath);
-        print('OpenFilex result: ${result.message}');
+        await OpenFilex.open(filePath);
       } else {
         _openGallery();
       }
     } catch (e) {
-      print('Error opening file: $e');
       _openGallery();
     }
   }
@@ -442,7 +420,6 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
   Future<void> _shareContent() async {
     try {
       HapticFeedback.lightImpact();
-
       final downloadUrl = _getDownloadUrl();
       final photographer = widget.photo.photographer;
 
@@ -463,11 +440,8 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
             ? 'Amazing Live Wallpaper by $photographer'
             : 'Beautiful Wallpaper by $photographer',
       );
-
     } catch (e) {
-      print('Share error: $e');
       Clipboard.setData(ClipboardData(text: 'https://wallhub.app/photo/${widget.photo.id}'));
-
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: const Row(
@@ -490,112 +464,95 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
     _videoController?.dispose();
     _fadeController.dispose();
     _slideController.dispose();
+    _scaleController.dispose();
+    _rotateController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final size = MediaQuery.of(context).size;
+    final isTablet = size.width > 600;
+    final isDesktop = size.width > 1024;
+
     return Scaffold(
-      backgroundColor: const Color(0xFF09090b),
-      body: Stack(
-        children: [
-          // Main content (image or video)
-          Hero(
-            tag: 'photo_${widget.photo.id}_${_photoType}',
-            child: GestureDetector(
-              onTap: _photoType == 'video' ? _toggleControls : null,
-              child: Container(
-                width: double.infinity,
-                height: double.infinity,
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    _buildMediaContent(),
-                    _buildGradientOverlay(),
-                    if (_photoType == 'video') _buildVideoOverlay(),
-                  ],
+      backgroundColor: const Color(0xFF000000),
+      body: Container(
+        decoration: BoxDecoration(
+          gradient: RadialGradient(
+            center: Alignment.center,
+            radius: 1.5,
+            colors: [
+              const Color(0xFF0a0a0f),
+              const Color(0xFF000000),
+            ],
+          ),
+        ),
+        child: Stack(
+          children: [
+            // Main media content
+            Hero(
+              tag: 'photo_${widget.photo.id}_${_photoType}',
+              child: GestureDetector(
+                onTap: _photoType == 'video' ? _toggleControls : null,
+                child: Container(
+                  width: double.infinity,
+                  height: double.infinity,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      _buildResponsiveMediaContent(size),
+                      _buildGradientOverlay(),
+                      if (_photoType == 'video') _buildVideoOverlay(size),
+                    ],
+                  ),
                 ),
               ),
             ),
-          ),
 
-          // Top controls
-          SafeArea(
-            child: FadeTransition(
-              opacity: _fadeAnimation,
-              child: AnimatedOpacity(
-                opacity: _showControls ? 1.0 : 0.0,
-                duration: const Duration(milliseconds: 300),
-                child: _buildTopControls(),
-              ),
-            ),
-          ),
-
-          // Bottom info and actions
-          Positioned(
-            bottom: 0,
-            left: 0,
-            right: 0,
-            child: SlideTransition(
-              position: _slideAnimation,
+            // Top controls
+            SafeArea(
               child: FadeTransition(
                 opacity: _fadeAnimation,
                 child: AnimatedOpacity(
                   opacity: _showControls ? 1.0 : 0.0,
                   duration: const Duration(milliseconds: 300),
-                  child: _buildBottomContent(),
+                  child: _buildResponsiveTopControls(size),
                 ),
               ),
             ),
-          ),
-        ],
+
+            // Bottom content and actions
+            Positioned(
+              bottom: 0,
+              left: 0,
+              right: 0,
+              child: SlideTransition(
+                position: _slideAnimation,
+                child: FadeTransition(
+                  opacity: _fadeAnimation,
+                  child: AnimatedOpacity(
+                    opacity: _showControls ? 1.0 : 0.0,
+                    duration: const Duration(milliseconds: 300),
+                    child: _buildResponsiveBottomContent(size),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
 
-  // MISSING BUILD METHODS - ADDED HERE
-  Widget _buildMediaContent() {
+  Widget _buildResponsiveMediaContent(Size size) {
     if (_photoType == 'video') {
       if (_isVideoLoading) {
-        return Container(
-          color: const Color(0xFF18181b),
-          child: const Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                SizedBox(
-                  width: 40,
-                  height: 40,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 3,
-                    valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF8b5cf6)),
-                  ),
-                ),
-                SizedBox(height: 20),
-                Text(
-                  'Loading live wallpaper...',
-                  style: TextStyle(
-                    color: Color(0xFFa1a1aa),
-                    fontSize: 16,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                SizedBox(height: 8),
-                Text(
-                  'Preparing your animated experience',
-                  style: TextStyle(
-                    color: Color(0xFF71717a),
-                    fontSize: 12,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
+        return _buildVideoLoadingState(size);
       }
 
       if (_videoLoadFailed) {
-        return _buildVideoErrorState();
+        return _buildVideoErrorState(size);
       }
 
       if (_isVideoInitialized && _videoController != null) {
@@ -613,28 +570,155 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
         );
       }
 
-      return _buildImageFallback();
+      return _buildImageFallback(size);
     }
 
-    return _buildImageContent();
+    return _buildResponsiveImageContent(size);
   }
 
-  Widget _buildVideoErrorState() {
+  Widget _buildResponsiveImageContent(Size size) {
+    return ScaleTransition(
+      scale: _scaleAnimation,
+      child: Image.network(
+        _getImageUrl(),
+        fit: BoxFit.cover,
+        filterQuality: FilterQuality.high,
+        loadingBuilder: (context, child, progress) {
+          if (progress == null) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) setState(() => _isLoading = false);
+            });
+            return child;
+          }
+          return _buildImageLoadingState(size);
+        },
+        errorBuilder: (context, error, stackTrace) => _buildImageErrorState(size),
+      ),
+    );
+  }
+
+  Widget _buildVideoLoadingState(Size size) {
+    final isTablet = size.width > 600;
+    final isDesktop = size.width > 1024;
+
     return Container(
-      color: const Color(0xFF18181b),
+      color: const Color(0xFF0a0a0f),
+      child: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              width: isDesktop ? 80 : isTablet ? 70 : 60,
+              height: isDesktop ? 80 : isTablet ? 70 : 60,
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [const Color(0xFF8b5cf6), const Color(0xFFa855f7)],
+                ),
+                shape: BoxShape.circle,
+              ),
+              child: Center(
+                child: SizedBox(
+                  width: isDesktop ? 40 : isTablet ? 35 : 30,
+                  height: isDesktop ? 40 : isTablet ? 35 : 30,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 3,
+                    valueColor: AlwaysStoppedAnimation(Colors.white),
+                  ),
+                ),
+              ),
+            ),
+            SizedBox(height: isDesktop ? 32 : isTablet ? 28 : 24),
+            Text(
+              'Loading live wallpaper...',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: isDesktop ? 20 : isTablet ? 18 : 16,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            SizedBox(height: isDesktop ? 12 : isTablet ? 10 : 8),
+            Text(
+              'Preparing your animated experience',
+              style: TextStyle(
+                color: const Color(0xFF71717a),
+                fontSize: isDesktop ? 16 : isTablet ? 14 : 12,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildImageLoadingState(Size size) {
+    final isTablet = size.width > 600;
+    final isDesktop = size.width > 1024;
+
+    return Container(
+      color: const Color(0xFF0a0a0f),
+      child: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              width: isDesktop ? 80 : isTablet ? 70 : 60,
+              height: isDesktop ? 80 : isTablet ? 70 : 60,
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [const Color(0xFF4f46e5), const Color(0xFF6366f1)],
+                ),
+                shape: BoxShape.circle,
+              ),
+              child: Center(
+                child: SizedBox(
+                  width: isDesktop ? 40 : isTablet ? 35 : 30,
+                  height: isDesktop ? 40 : isTablet ? 35 : 30,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 3,
+                    valueColor: AlwaysStoppedAnimation(Colors.white),
+                  ),
+                ),
+              ),
+            ),
+            SizedBox(height: isDesktop ? 32 : isTablet ? 28 : 24),
+            Text(
+              'Loading wallpaper...',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: isDesktop ? 20 : isTablet ? 18 : 16,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildVideoErrorState(Size size) {
+    final isTablet = size.width > 600;
+    final isDesktop = size.width > 1024;
+
+    return Container(
+      color: const Color(0xFF0a0a0f),
       child: Stack(
         fit: StackFit.expand,
         children: [
-          _buildImageFallback(),
+          _buildImageFallback(size),
           Container(
-            color: Colors.black.withOpacity(0.7),
+            color: Colors.black.withOpacity(0.8),
             child: Center(
               child: Container(
-                margin: const EdgeInsets.all(32),
-                padding: const EdgeInsets.all(24),
+                margin: EdgeInsets.all(isDesktop ? 40 : isTablet ? 32 : 24),
+                padding: EdgeInsets.all(isDesktop ? 32 : isTablet ? 28 : 24),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF27272a),
-                  borderRadius: BorderRadius.circular(16),
+                  gradient: LinearGradient(
+                    colors: [
+                      const Color(0xFF1a1a2e).withOpacity(0.9),
+                      const Color(0xFF16213e).withOpacity(0.7),
+                    ],
+                  ),
+                  borderRadius: BorderRadius.circular(isDesktop ? 24 : isTablet ? 20 : 16),
                   border: Border.all(
                     color: const Color(0xFF8b5cf6).withOpacity(0.3),
                     width: 1,
@@ -644,84 +728,60 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Container(
-                      padding: const EdgeInsets.all(16),
+                      padding: EdgeInsets.all(isDesktop ? 20 : isTablet ? 18 : 16),
                       decoration: BoxDecoration(
-                        color: const Color(0xFF8b5cf6).withOpacity(0.1),
+                        color: const Color(0xFF8b5cf6).withOpacity(0.2),
                         borderRadius: BorderRadius.circular(50),
                       ),
-                      child: const Icon(
-                        Icons.videocam_off,
-                        color: Color(0xFF8b5cf6),
-                        size: 32,
+                      child: Icon(
+                        Icons.videocam_off_rounded,
+                        color: const Color(0xFF8b5cf6),
+                        size: isDesktop ? 40 : isTablet ? 36 : 32,
                       ),
                     ),
-                    16.heightBox,
-                    const Text(
+                    SizedBox(height: isDesktop ? 24 : isTablet ? 20 : 16),
+                    Text(
                       'Live Wallpaper Unavailable',
                       style: TextStyle(
                         color: Colors.white,
-                        fontSize: 18,
-                        fontWeight: FontWeight.w600,
+                        fontSize: isDesktop ? 22 : isTablet ? 20 : 18,
+                        fontWeight: FontWeight.w700,
                       ),
                     ),
-                    8.heightBox,
-                    const Text(
+                    SizedBox(height: isDesktop ? 12 : isTablet ? 10 : 8),
+                    Text(
                       'Unable to load animated content.\nShowing preview image instead.',
                       style: TextStyle(
-                        color: Color(0xFFa1a1aa),
-                        fontSize: 14,
+                        color: const Color(0xFFa1a1aa),
+                        fontSize: isDesktop ? 16 : isTablet ? 14 : 12,
+                        height: 1.5,
                       ),
                       textAlign: TextAlign.center,
                     ),
-                    20.heightBox,
+                    SizedBox(height: isDesktop ? 28 : isTablet ? 24 : 20),
                     Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        GestureDetector(
-                          onTap: () => _initializeVideoPlayer(),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF8b5cf6),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: const Text(
-                              'Retry',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
+                        _buildActionButton(
+                          'Retry',
+                          Icons.refresh_rounded,
+                          const Color(0xFF8b5cf6),
+                              () => _initializeVideoPlayer(),
+                          size,
+                          isPrimary: true,
                         ),
-                        12.widthBox,
-                        GestureDetector(
-                          onTap: () {
+                        SizedBox(width: isDesktop ? 16 : isTablet ? 14 : 12),
+                        _buildActionButton(
+                          'Continue',
+                          Icons.arrow_forward_rounded,
+                          const Color(0xFF71717a),
+                              () {
                             setState(() {
                               _videoLoadFailed = false;
                               _showControls = true;
                             });
                           },
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                            decoration: BoxDecoration(
-                              color: Colors.transparent,
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(
-                                color: const Color(0xFF71717a),
-                                width: 1,
-                              ),
-                            ),
-                            child: const Text(
-                              'Continue',
-                              style: TextStyle(
-                                color: Color(0xFF71717a),
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
+                          size,
                         ),
                       ],
                     ),
@@ -735,58 +795,28 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
     );
   }
 
-  Widget _buildImageContent() {
-    return Image.network(
-      _getImageUrl(),
-      fit: BoxFit.cover,
-      loadingBuilder: (context, child, progress) {
-        if (progress == null) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) {
-              setState(() => _isLoading = false);
-            }
-          });
-          return child;
-        }
-        return Container(
-          color: const Color(0xFF18181b),
-          child: const Center(
-            child: CircularProgressIndicator(
-              valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF4f46e5)),
-            ),
-          ),
-        );
-      },
-      errorBuilder: (context, error, stackTrace) => _buildImageErrorState(),
-    );
-  }
+  Widget _buildImageErrorState(Size size) {
+    final isTablet = size.width > 600;
+    final isDesktop = size.width > 1024;
 
-  Widget _buildImageFallback() {
-    return Image.network(
-      _getImageUrl(),
-      fit: BoxFit.cover,
-      errorBuilder: (context, error, stackTrace) => _buildImageErrorState(),
-    );
-  }
-
-  Widget _buildImageErrorState() {
     return Container(
-      color: const Color(0xFF18181b),
-      child: const Center(
+      color: const Color(0xFF0a0a0f),
+      child: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Icon(
               Icons.broken_image_outlined,
-              color: Color(0xFF71717a),
-              size: 64,
+              color: const Color(0xFF71717a),
+              size: isDesktop ? 80 : isTablet ? 70 : 64,
             ),
-            SizedBox(height: 16),
+            SizedBox(height: isDesktop ? 24 : isTablet ? 20 : 16),
             Text(
               'Failed to load image',
               style: TextStyle(
-                color: Color(0xFF71717a),
-                fontSize: 16,
+                color: const Color(0xFF71717a),
+                fontSize: isDesktop ? 20 : isTablet ? 18 : 16,
+                fontWeight: FontWeight.w500,
               ),
             ),
           ],
@@ -795,17 +825,33 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
     );
   }
 
-  Widget _buildVideoOverlay() {
+  Widget _buildImageFallback(Size size) {
+    return Image.network(
+      _getImageUrl(),
+      fit: BoxFit.cover,
+      errorBuilder: (context, error, stackTrace) => _buildImageErrorState(size),
+    );
+  }
+
+  Widget _buildVideoOverlay(Size size) {
     if (_videoLoadFailed) return const SizedBox.shrink();
+
+    final isTablet = size.width > 600;
+    final isDesktop = size.width > 1024;
 
     return AnimatedOpacity(
       opacity: _showControls && !_isVideoLoading ? 1.0 : 0.0,
       duration: const Duration(milliseconds: 300),
       child: Center(
         child: Container(
-          padding: const EdgeInsets.all(20),
+          padding: EdgeInsets.all(isDesktop ? 24 : isTablet ? 20 : 18),
           decoration: BoxDecoration(
-            color: Colors.black.withOpacity(0.7),
+            gradient: RadialGradient(
+              colors: [
+                Colors.black.withOpacity(0.8),
+                Colors.black.withOpacity(0.4),
+              ],
+            ),
             shape: BoxShape.circle,
             border: Border.all(
               color: const Color(0xFF8b5cf6),
@@ -813,9 +859,9 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
             ),
             boxShadow: [
               BoxShadow(
-                color: const Color(0xFF8b5cf6).withOpacity(0.3),
-                blurRadius: 20,
-                offset: const Offset(0, 4),
+                color: const Color(0xFF8b5cf6).withOpacity(0.4),
+                blurRadius: 25,
+                offset: const Offset(0, 8),
               ),
             ],
           ),
@@ -823,10 +869,10 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
             onTap: _isVideoInitialized ? _playPauseVideo : null,
             child: Icon(
               _isVideoInitialized
-                  ? (_isPlaying ? Icons.pause : Icons.play_arrow)
+                  ? (_isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded)
                   : Icons.video_library_outlined,
               color: Colors.white,
-              size: 40,
+              size: isDesktop ? 48 : isTablet ? 44 : 40,
             ),
           ),
         ),
@@ -841,94 +887,132 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
           colors: [
-            Colors.black.withOpacity(_showControls ? 0.6 : 0.2),
+            Colors.black.withOpacity(_showControls ? 0.7 : 0.3),
             Colors.transparent,
             Colors.transparent,
-            Colors.black.withOpacity(_showControls ? 0.8 : 0.3),
+            Colors.black.withOpacity(_showControls ? 0.9 : 0.4),
           ],
-          stops: const [0.0, 0.3, 0.7, 1.0],
+          stops: const [0.0, 0.25, 0.75, 1.0],
         ),
       ),
     );
   }
 
-  Widget _buildTopControls() {
+  Widget _buildResponsiveTopControls(Size size) {
+    final isTablet = size.width > 600;
+    final isDesktop = size.width > 1024;
+
     return Padding(
-      padding: const EdgeInsets.all(16),
+      padding: EdgeInsets.all(isDesktop ? 24 : isTablet ? 20 : 16),
       child: Row(
         children: [
-          Container(
-            decoration: BoxDecoration(
-              color: Colors.black.withOpacity(0.6),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color: Colors.white.withOpacity(0.1),
-                width: 1,
-              ),
-            ),
-            child: IconButton(
-              icon: const Icon(Icons.arrow_back_rounded, color: Colors.white),
-              onPressed: () {
-                HapticFeedback.lightImpact();
-                Navigator.pop(context);
-              },
-            ),
+          _buildControlButton(
+            Icons.arrow_back_rounded,
+                () {
+              HapticFeedback.lightImpact();
+              Navigator.pop(context);
+            },
+            size,
           ),
           const Spacer(),
-          if (_photoType == 'video')
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              decoration: BoxDecoration(
-                color: _getStatusColor().withOpacity(0.9),
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(
-                  color: _getStatusColor().withOpacity(0.5),
-                  width: 1,
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: _getStatusColor().withOpacity(0.3),
-                    blurRadius: 8,
-                    offset: const Offset(0, 2),
-                  ),
-                ],
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    _getStatusIcon(),
-                    color: Colors.white,
-                    size: 16,
-                  ),
-                  const SizedBox(width: 6),
-                  Text(
-                    _getStatusText(),
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          12.widthBox,
-          Container(
-            decoration: BoxDecoration(
-              color: Colors.black.withOpacity(0.6),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color: Colors.white.withOpacity(0.1),
-                width: 1,
-              ),
-            ),
-            child: IconButton(
-              icon: const Icon(Icons.more_vert, color: Colors.white),
-              onPressed: () {
-                HapticFeedback.lightImpact();
-                _showOptionsBottomSheet();
-              },
+          if (_photoType == 'video') ...[
+            _buildStatusBadge(size),
+            SizedBox(width: isDesktop ? 16 : isTablet ? 14 : 12),
+          ],
+          _buildControlButton(
+            Icons.more_vert_rounded,
+                () {
+              HapticFeedback.lightImpact();
+              _showOptionsBottomSheet(size);
+            },
+            size,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildControlButton(IconData icon, VoidCallback onPressed, Size size) {
+    final isTablet = size.width > 600;
+    final isDesktop = size.width > 1024;
+
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            Colors.black.withOpacity(0.7),
+            Colors.black.withOpacity(0.5),
+          ],
+        ),
+        borderRadius: BorderRadius.circular(isDesktop ? 16 : isTablet ? 14 : 12),
+        border: Border.all(
+          color: Colors.white.withOpacity(0.2),
+          width: 1,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.3),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: IconButton(
+        icon: Icon(
+          icon,
+          color: Colors.white,
+          size: isDesktop ? 26 : isTablet ? 24 : 22,
+        ),
+        onPressed: onPressed,
+        iconSize: isDesktop ? 26 : isTablet ? 24 : 22,
+      ),
+    );
+  }
+
+  Widget _buildStatusBadge(Size size) {
+    final isTablet = size.width > 600;
+    final isDesktop = size.width > 1024;
+
+    return Container(
+      padding: EdgeInsets.symmetric(
+        horizontal: isDesktop ? 16 : isTablet ? 14 : 12,
+        vertical: isDesktop ? 8 : isTablet ? 7 : 6,
+      ),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            _getStatusColor(),
+            _getStatusColor().withOpacity(0.8),
+          ],
+        ),
+        borderRadius: BorderRadius.circular(isDesktop ? 20 : isTablet ? 18 : 16),
+        border: Border.all(
+          color: _getStatusColor().withOpacity(0.5),
+          width: 1,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: _getStatusColor().withOpacity(0.3),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            _getStatusIcon(),
+            color: Colors.white,
+            size: isDesktop ? 18 : isTablet ? 16 : 14,
+          ),
+          SizedBox(width: isDesktop ? 8 : isTablet ? 7 : 6),
+          Text(
+            _getStatusText(),
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: isDesktop ? 14 : isTablet ? 12 : 10,
+              fontWeight: FontWeight.w700,
             ),
           ),
         ],
@@ -936,34 +1020,40 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
     );
   }
 
-  Widget _buildBottomContent() {
+  Widget _buildResponsiveBottomContent(Size size) {
+    final isTablet = size.width > 600;
+    final isDesktop = size.width > 1024;
+
     return Container(
       padding: EdgeInsets.fromLTRB(
-        24,
-        32,
-        24,
-        MediaQuery.of(context).padding.bottom + 24,
+        isDesktop ? 32 : isTablet ? 28 : 24,
+        isDesktop ? 40 : isTablet ? 36 : 32,
+        isDesktop ? 32 : isTablet ? 28 : 24,
+        MediaQuery.of(context).padding.bottom + (isDesktop ? 32 : isTablet ? 28 : 24),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildPhotoInfo(),
-          24.heightBox,
-          _buildDimensionsInfo(),
-          24.heightBox,
-          _buildActionButtons(),
+          _buildResponsivePhotoInfo(size),
+          SizedBox(height: isDesktop ? 32 : isTablet ? 28 : 24),
+          _buildResponsiveDimensionsInfo(size),
+          SizedBox(height: isDesktop ? 32 : isTablet ? 28 : 24),
+          _buildResponsiveActionButtons(size),
         ],
       ),
     );
   }
 
-  Widget _buildPhotoInfo() {
+  Widget _buildResponsivePhotoInfo(Size size) {
+    final isTablet = size.width > 600;
+    final isDesktop = size.width > 1024;
+
     return Row(
       children: [
         Container(
-          width: 48,
-          height: 48,
+          width: isDesktop ? 60 : isTablet ? 54 : 48,
+          height: isDesktop ? 60 : isTablet ? 54 : 48,
           decoration: BoxDecoration(
             gradient: LinearGradient(
               colors: _photoType == 'video'
@@ -972,37 +1062,47 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
             ),
-            borderRadius: BorderRadius.circular(24),
+            borderRadius: BorderRadius.circular(isDesktop ? 30 : isTablet ? 27 : 24),
+            boxShadow: [
+              BoxShadow(
+                color: (_photoType == 'video'
+                    ? const Color(0xFF8b5cf6)
+                    : const Color(0xFF4f46e5)).withOpacity(0.3),
+                blurRadius: 15,
+                offset: const Offset(0, 6),
+              ),
+            ],
           ),
           child: Icon(
             _photoType == 'video'
-                ? Icons.video_library_outlined
-                : Icons.photo_outlined,
+                ? Icons.video_library_rounded
+                : Icons.photo_rounded,
             color: Colors.white,
-            size: 24,
+            size: isDesktop ? 30 : isTablet ? 27 : 24,
           ),
         ),
-        16.widthBox,
+        SizedBox(width: isDesktop ? 20 : isTablet ? 18 : 16),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
                 widget.photo.photographer,
-                style: const TextStyle(
+                style: TextStyle(
                   color: Colors.white,
-                  fontSize: 18,
+                  fontSize: isDesktop ? 22 : isTablet ? 20 : 18,
                   fontWeight: FontWeight.w700,
+                  height: 1.2,
                 ),
               ),
-              4.heightBox,
+              SizedBox(height: isDesktop ? 6 : isTablet ? 5 : 4),
               Text(
                 _photoType == 'video'
                     ? 'Live Wallpaper Creator'
                     : 'Photographer',
-                style: const TextStyle(
-                  color: Color(0xFFa1a1aa),
-                  fontSize: 14,
+                style: TextStyle(
+                  color: const Color(0xFFa1a1aa),
+                  fontSize: isDesktop ? 16 : isTablet ? 14 : 12,
                   fontWeight: FontWeight.w500,
                 ),
               ),
@@ -1011,16 +1111,19 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
         ),
         if (_photoType == 'video')
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            padding: EdgeInsets.symmetric(
+              horizontal: isDesktop ? 12 : isTablet ? 10 : 8,
+              vertical: isDesktop ? 6 : isTablet ? 5 : 4,
+            ),
             decoration: BoxDecoration(
               color: _getStatusColor(),
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(isDesktop ? 12 : isTablet ? 10 : 8),
             ),
             child: Text(
               _getStatusText(),
-              style: const TextStyle(
+              style: TextStyle(
                 color: Colors.white,
-                fontSize: 10,
+                fontSize: isDesktop ? 12 : isTablet ? 11 : 10,
                 fontWeight: FontWeight.w700,
               ),
             ),
@@ -1029,86 +1132,57 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
     );
   }
 
-  Widget _buildDimensionsInfo() {
+  Widget _buildResponsiveDimensionsInfo(Size size) {
+    final isTablet = size.width > 600;
+    final isDesktop = size.width > 1024;
+
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: EdgeInsets.all(isDesktop ? 24 : isTablet ? 20 : 16),
       decoration: BoxDecoration(
-        color: Colors.black.withOpacity(0.6),
-        borderRadius: BorderRadius.circular(16),
+        gradient: LinearGradient(
+          colors: [
+            Colors.black.withOpacity(0.7),
+            Colors.black.withOpacity(0.5),
+          ],
+        ),
+        borderRadius: BorderRadius.circular(isDesktop ? 20 : isTablet ? 18 : 16),
         border: Border.all(
           color: Colors.white.withOpacity(0.1),
           width: 1,
         ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.3),
+            blurRadius: 15,
+            offset: const Offset(0, 6),
+          ),
+        ],
       ),
       child: Row(
         children: [
           Expanded(
-            child: Column(
-              children: [
-                Icon(
-                  _photoType == 'video'
-                      ? Icons.aspect_ratio
-                      : Icons.photo_size_select_large,
-                  color: _photoType == 'video'
-                      ? const Color(0xFF8b5cf6)
-                      : const Color(0xFF4f46e5),
-                  size: 20,
-                ),
-                8.heightBox,
-                Text(
-                  _getResolutionText(),
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                4.heightBox,
-                const Text(
-                  'Resolution',
-                  style: TextStyle(
-                    color: Color(0xFFa1a1aa),
-                    fontSize: 12,
-                  ),
-                ),
-              ],
+            child: _buildInfoColumn(
+              _photoType == 'video'
+                  ? Icons.aspect_ratio_rounded
+                  : Icons.photo_size_select_large_rounded,
+              _getResolutionText(),
+              'Resolution',
+              size,
             ),
           ),
           Container(
             width: 1,
-            height: 40,
-            color: Colors.white.withOpacity(0.1),
+            height: isDesktop ? 50 : isTablet ? 45 : 40,
+            color: Colors.white.withOpacity(0.2),
           ),
           Expanded(
-            child: Column(
-              children: [
-                Icon(
-                  _photoType == 'video'
-                      ? Icons.play_circle_outline
-                      : Icons.image_aspect_ratio,
-                  color: _photoType == 'video'
-                      ? const Color(0xFF8b5cf6)
-                      : const Color(0xFF4f46e5),
-                  size: 20,
-                ),
-                8.heightBox,
-                Text(
-                  _photoType == 'video' ? 'MP4' : _getAspectRatio(),
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                4.heightBox,
-                Text(
-                  _photoType == 'video' ? 'Format' : 'Ratio',
-                  style: const TextStyle(
-                    color: Color(0xFFa1a1aa),
-                    fontSize: 12,
-                  ),
-                ),
-              ],
+            child: _buildInfoColumn(
+              _photoType == 'video'
+                  ? Icons.play_circle_outline_rounded
+                  : Icons.image_aspect_ratio_rounded,
+              _photoType == 'video' ? 'MP4' : _getAspectRatio(),
+              _photoType == 'video' ? 'Format' : 'Ratio',
+              size,
             ),
           ),
         ],
@@ -1116,15 +1190,55 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
     );
   }
 
-  Widget _buildActionButtons() {
+  Widget _buildInfoColumn(IconData icon, String value, String label, Size size) {
+    final isTablet = size.width > 600;
+    final isDesktop = size.width > 1024;
+
+    return Column(
+      children: [
+        Icon(
+          icon,
+          color: _photoType == 'video'
+              ? const Color(0xFF8b5cf6)
+              : const Color(0xFF4f46e5),
+          size: isDesktop ? 24 : isTablet ? 22 : 20,
+        ),
+        SizedBox(height: isDesktop ? 12 : isTablet ? 10 : 8),
+        Text(
+          value,
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: isDesktop ? 16 : isTablet ? 15 : 14,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        SizedBox(height: isDesktop ? 6 : isTablet ? 5 : 4),
+        Text(
+          label,
+          style: TextStyle(
+            color: const Color(0xFFa1a1aa),
+            fontSize: isDesktop ? 14 : isTablet ? 13 : 12,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildResponsiveActionButtons(Size size) {
+    final isTablet = size.width > 600;
+    final isDesktop = size.width > 1024;
+
     return Row(
       children: [
+        // Primary action button
         Expanded(
-          flex: 2,
+          flex: isDesktop ? 3 : 2,
           child: GestureDetector(
-            onTap: () => _handleSetWallpaper(),
+            onTap: () => _handleSetWallpaper(size),
             child: Container(
-              padding: const EdgeInsets.symmetric(vertical: 16),
+              padding: EdgeInsets.symmetric(
+                vertical: isDesktop ? 20 : isTablet ? 18 : 16,
+              ),
               decoration: BoxDecoration(
                 gradient: LinearGradient(
                   colors: _photoType == 'video'
@@ -1133,14 +1247,14 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
                 ),
-                borderRadius: BorderRadius.circular(16),
+                borderRadius: BorderRadius.circular(isDesktop ? 20 : isTablet ? 18 : 16),
                 boxShadow: [
                   BoxShadow(
                     color: (_photoType == 'video'
                         ? const Color(0xFF8b5cf6)
                         : const Color(0xFF4f46e5)).withOpacity(0.4),
-                    blurRadius: 12,
-                    offset: const Offset(0, 6),
+                    blurRadius: 15,
+                    offset: const Offset(0, 8),
                   ),
                 ],
               ),
@@ -1149,19 +1263,19 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
                 children: [
                   Icon(
                     _photoType == 'video'
-                        ? Icons.video_settings
-                        : Icons.wallpaper,
+                        ? Icons.video_settings_rounded
+                        : Icons.wallpaper_rounded,
                     color: Colors.white,
-                    size: 20,
+                    size: isDesktop ? 24 : isTablet ? 22 : 20,
                   ),
-                  12.widthBox,
+                  SizedBox(width: isDesktop ? 16 : isTablet ? 14 : 12),
                   Text(
                     _photoType == 'video'
                         ? 'Set Live Wallpaper'
                         : 'Set Wallpaper',
-                    style: const TextStyle(
+                    style: TextStyle(
                       color: Colors.white,
-                      fontSize: 16,
+                      fontSize: isDesktop ? 18 : isTablet ? 16 : 14,
                       fontWeight: FontWeight.w700,
                     ),
                   ),
@@ -1170,69 +1284,106 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
             ),
           ),
         ),
-        16.widthBox,
+
+        SizedBox(width: isDesktop ? 20 : isTablet ? 18 : 16),
+
+        // Download button
         GestureDetector(
           onTap: _isDownloading ? null : _downloadFile,
           child: Container(
-            padding: const EdgeInsets.all(16),
+            padding: EdgeInsets.all(isDesktop ? 20 : isTablet ? 18 : 16),
             decoration: BoxDecoration(
-              color: _isDownloading
-                  ? const Color(0xFF059669).withOpacity(0.8)
-                  : Colors.black.withOpacity(0.6),
-              borderRadius: BorderRadius.circular(16),
+              gradient: _isDownloading
+                  ? LinearGradient(
+                colors: [
+                  const Color(0xFF059669),
+                  const Color(0xFF10b981),
+                ],
+              )
+                  : LinearGradient(
+                colors: [
+                  Colors.black.withOpacity(0.7),
+                  Colors.black.withOpacity(0.5),
+                ],
+              ),
+              borderRadius: BorderRadius.circular(isDesktop ? 20 : isTablet ? 18 : 16),
               border: Border.all(
                 color: _isDownloading
                     ? const Color(0xFF059669)
                     : Colors.white.withOpacity(0.2),
                 width: _isDownloading ? 2 : 1,
               ),
+              boxShadow: [
+                BoxShadow(
+                  color: (_isDownloading
+                      ? const Color(0xFF059669)
+                      : Colors.black).withOpacity(0.3),
+                  blurRadius: 15,
+                  offset: const Offset(0, 6),
+                ),
+              ],
             ),
             child: _isDownloading
                 ? SizedBox(
-              width: 20,
-              height: 20,
+              width: isDesktop ? 24 : isTablet ? 22 : 20,
+              height: isDesktop ? 24 : isTablet ? 22 : 20,
               child: Stack(
                 children: [
                   CircularProgressIndicator(
                     value: _downloadProgress,
                     strokeWidth: 3,
-                    valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
+                    valueColor: const AlwaysStoppedAnimation(Colors.white),
                     backgroundColor: Colors.white.withOpacity(0.3),
                   ),
-                  const Center(
+                  Center(
                     child: Icon(
-                      Icons.download,
+                      Icons.download_rounded,
                       color: Colors.white,
-                      size: 12,
+                      size: isDesktop ? 14 : isTablet ? 13 : 12,
                     ),
                   ),
                 ],
               ),
             )
-                : const Icon(
-              Icons.download_outlined,
+                : Icon(
+              Icons.download_rounded,
               color: Colors.white,
-              size: 20,
+              size: isDesktop ? 24 : isTablet ? 22 : 20,
             ),
           ),
         ),
-        12.widthBox,
+
+        SizedBox(width: isDesktop ? 16 : isTablet ? 14 : 12),
+
+        // Share button
         GestureDetector(
           onTap: _shareContent,
           child: Container(
-            padding: const EdgeInsets.all(16),
+            padding: EdgeInsets.all(isDesktop ? 20 : isTablet ? 18 : 16),
             decoration: BoxDecoration(
-              color: Colors.black.withOpacity(0.6),
-              borderRadius: BorderRadius.circular(16),
+              gradient: LinearGradient(
+                colors: [
+                  Colors.black.withOpacity(0.7),
+                  Colors.black.withOpacity(0.5),
+                ],
+              ),
+              borderRadius: BorderRadius.circular(isDesktop ? 20 : isTablet ? 18 : 16),
               border: Border.all(
                 color: Colors.white.withOpacity(0.2),
                 width: 1,
               ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.3),
+                  blurRadius: 15,
+                  offset: const Offset(0, 6),
+                ),
+              ],
             ),
-            child: const Icon(
-              Icons.share_outlined,
+            child: Icon(
+              Icons.share_rounded,
               color: Colors.white,
-              size: 20,
+              size: isDesktop ? 24 : isTablet ? 22 : 20,
             ),
           ),
         ),
@@ -1240,7 +1391,59 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
     );
   }
 
-  // HELPER METHODS
+  Widget _buildActionButton(
+      String label,
+      IconData icon,
+      Color color,
+      VoidCallback onPressed,
+      Size size, {
+        bool isPrimary = false,
+      }) {
+    final isTablet = size.width > 600;
+    final isDesktop = size.width > 1024;
+
+    return GestureDetector(
+      onTap: onPressed,
+      child: Container(
+        padding: EdgeInsets.symmetric(
+          horizontal: isDesktop ? 20 : isTablet ? 18 : 16,
+          vertical: isDesktop ? 12 : isTablet ? 10 : 8,
+        ),
+        decoration: BoxDecoration(
+          gradient: isPrimary
+              ? LinearGradient(colors: [color, color.withOpacity(0.8)])
+              : null,
+          color: isPrimary ? null : Colors.transparent,
+          borderRadius: BorderRadius.circular(isDesktop ? 12 : isTablet ? 10 : 8),
+          border: Border.all(
+            color: color,
+            width: 1,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              icon,
+              color: isPrimary ? Colors.white : color,
+              size: isDesktop ? 18 : isTablet ? 16 : 14,
+            ),
+            SizedBox(width: isDesktop ? 8 : isTablet ? 7 : 6),
+            Text(
+              label,
+              style: TextStyle(
+                color: isPrimary ? Colors.white : color,
+                fontSize: isDesktop ? 14 : isTablet ? 13 : 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // Helper methods
   String _getImageUrl() {
     try {
       if (_photoType == 'video') {
@@ -1299,64 +1502,184 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
   }
 
   IconData _getStatusIcon() {
-    if (_videoLoadFailed) return Icons.error_outline;
-    if (_isVideoLoading) return Icons.hourglass_empty;
-    if (_isPlaying) return Icons.play_arrow;
-    return Icons.video_library;
+    if (_videoLoadFailed) return Icons.error_outline_rounded;
+    if (_isVideoLoading) return Icons.hourglass_empty_rounded;
+    if (_isPlaying) return Icons.play_arrow_rounded;
+    return Icons.video_library_rounded;
   }
 
   String _getStatusText() {
     if (_videoLoadFailed) return 'ERROR';
     if (_isVideoLoading) return 'LOADING';
     if (_isPlaying) return 'PLAYING';
-    return 'LIVE WALLPAPER';
+    return 'LIVE';
   }
 
-
-
-// ... (rest of the imports)
-
-// ... (inside _ImageDetailScreenState)
-
-  void _handleSetWallpaper() {
+  void _handleSetWallpaper(Size size) {
     if (kIsWeb) {
-      _showErrorSnackBar('This feature is not available on the web.');
+      _showErrorSnackBar('Wallpaper setting not available on web');
       return;
     }
+
     HapticFeedback.mediumImpact();
+    _showWallpaperOptionsBottomSheet(size);
+  }
+
+  void _showWallpaperOptionsBottomSheet(Size size) {
+    final isTablet = size.width > 600;
+    final isDesktop = size.width > 1024;
+
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
       builder: (context) => Container(
-        padding: const EdgeInsets.all(24),
-        decoration: const BoxDecoration(
-          color: Color(0xFF18181b),
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        padding: EdgeInsets.all(isDesktop ? 32 : isTablet ? 28 : 24),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              const Color(0xFF1a1a2e),
+              const Color(0xFF16213e),
+              const Color(0xFF0f0f0f),
+            ],
+          ),
+          borderRadius: BorderRadius.vertical(
+            top: Radius.circular(isDesktop ? 32 : isTablet ? 28 : 24),
+          ),
+          border: Border.all(
+            color: Colors.white.withOpacity(0.1),
+            width: 1,
+          ),
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              width: 40,
-              height: 4,
+              width: isDesktop ? 50 : isTablet ? 45 : 40,
+              height: isDesktop ? 6 : isTablet ? 5 : 4,
               decoration: BoxDecoration(
                 color: const Color(0xFF71717a),
-                borderRadius: BorderRadius.circular(2),
+                borderRadius: BorderRadius.circular(isDesktop ? 3 : 2),
               ),
             ),
-            20.heightBox,
+            SizedBox(height: isDesktop ? 28 : isTablet ? 24 : 20),
             Text(
-              'Set Wallpaper',
-              style: const TextStyle(
+              _photoType == 'video' ? 'Set Live Wallpaper' : 'Set Wallpaper',
+              style: TextStyle(
                 color: Colors.white,
-                fontSize: 18,
-                fontWeight: FontWeight.w600,
+                fontSize: isDesktop ? 24 : isTablet ? 22 : 20,
+                fontWeight: FontWeight.w700,
               ),
             ),
-            20.heightBox,
-            _buildOptionItem(Icons.home_outlined, 'Home Screen'),
-            _buildOptionItem(Icons.lock_outline, 'Lock Screen'),
-            _buildOptionItem(Icons.phone_android_outlined, 'Both'),
+            SizedBox(height: isDesktop ? 28 : isTablet ? 24 : 20),
+            _buildWallpaperOption(
+              Icons.home_rounded,
+              'Home Screen',
+              'Set as home screen wallpaper',
+                  () => _setWallpaper(AsyncWallpaper.HOME_SCREEN),
+              size,
+            ),
+            _buildWallpaperOption(
+              Icons.lock_rounded,
+              'Lock Screen',
+              'Set as lock screen wallpaper',
+                  () => _setWallpaper(AsyncWallpaper.LOCK_SCREEN),
+              size,
+            ),
+            _buildWallpaperOption(
+              Icons.phone_android_rounded,
+              'Both Screens',
+              'Set as both home and lock screen',
+                  () => _setWallpaper(AsyncWallpaper.BOTH_SCREENS),
+              size,
+            ),
+            SizedBox(height: MediaQuery.of(context).padding.bottom),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildWallpaperOption(
+      IconData icon,
+      String title,
+      String subtitle,
+      VoidCallback onTap,
+      Size size,
+      ) {
+    final isTablet = size.width > 600;
+    final isDesktop = size.width > 1024;
+
+    return GestureDetector(
+      onTap: () {
+        Navigator.pop(context);
+        onTap();
+      },
+      child: Container(
+        width: double.infinity,
+        padding: EdgeInsets.all(isDesktop ? 24 : isTablet ? 20 : 16),
+        margin: EdgeInsets.only(bottom: isDesktop ? 16 : isTablet ? 14 : 12),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              const Color(0xFF27272a).withOpacity(0.8),
+              const Color(0xFF1a1a1e).withOpacity(0.6),
+            ],
+          ),
+          borderRadius: BorderRadius.circular(isDesktop ? 20 : isTablet ? 18 : 16),
+          border: Border.all(
+            color: Colors.white.withOpacity(0.1),
+            width: 1,
+          ),
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: EdgeInsets.all(isDesktop ? 16 : isTablet ? 14 : 12),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: _photoType == 'video'
+                      ? [const Color(0xFF8b5cf6), const Color(0xFFa855f7)]
+                      : [const Color(0xFF4f46e5), const Color(0xFF6366f1)],
+                ),
+                borderRadius: BorderRadius.circular(isDesktop ? 16 : isTablet ? 14 : 12),
+              ),
+              child: Icon(
+                icon,
+                color: Colors.white,
+                size: isDesktop ? 28 : isTablet ? 26 : 24,
+              ),
+            ),
+            SizedBox(width: isDesktop ? 20 : isTablet ? 18 : 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: isDesktop ? 18 : isTablet ? 16 : 14,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  SizedBox(height: isDesktop ? 6 : isTablet ? 5 : 4),
+                  Text(
+                    subtitle,
+                    style: TextStyle(
+                      color: const Color(0xFFa1a1aa),
+                      fontSize: isDesktop ? 14 : isTablet ? 13 : 12,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Icon(
+              Icons.arrow_forward_ios_rounded,
+              color: const Color(0xFF71717a),
+              size: isDesktop ? 20 : isTablet ? 18 : 16,
+            ),
           ],
         ),
       ),
@@ -1389,87 +1712,122 @@ class _ImageDetailScreenState extends State<ImageDetailScreen>
       );
       _showSuccessSnackBar('Wallpaper set successfully!', null);
     } catch (e) {
-      _showErrorSnackBar('Failed to set wallpaper.');
+      _showErrorSnackBar('Failed to set wallpaper');
     }
   }
 
-  void _showOptionsBottomSheet() {
+  void _showOptionsBottomSheet(Size size) {
+    final isTablet = size.width > 600;
+    final isDesktop = size.width > 1024;
+
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
       builder: (context) => Container(
-        padding: const EdgeInsets.all(24),
-        decoration: const BoxDecoration(
-          color: Color(0xFF18181b),
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        padding: EdgeInsets.all(isDesktop ? 32 : isTablet ? 28 : 24),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              const Color(0xFF1a1a2e),
+              const Color(0xFF16213e),
+              const Color(0xFF0f0f0f),
+            ],
+          ),
+          borderRadius: BorderRadius.vertical(
+            top: Radius.circular(isDesktop ? 32 : isTablet ? 28 : 24),
+          ),
+          border: Border.all(
+            color: Colors.white.withOpacity(0.1),
+            width: 1,
+          ),
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              width: 40,
-              height: 4,
+              width: isDesktop ? 50 : isTablet ? 45 : 40,
+              height: isDesktop ? 6 : isTablet ? 5 : 4,
               decoration: BoxDecoration(
                 color: const Color(0xFF71717a),
-                borderRadius: BorderRadius.circular(2),
+                borderRadius: BorderRadius.circular(isDesktop ? 3 : 2),
               ),
             ),
-            20.heightBox,
+            SizedBox(height: isDesktop ? 28 : isTablet ? 24 : 20),
             Text(
               _photoType == 'video' ? 'Live Wallpaper Options' : 'Photo Options',
-              style: const TextStyle(
+              style: TextStyle(
                 color: Colors.white,
-                fontSize: 18,
-                fontWeight: FontWeight.w600,
+                fontSize: isDesktop ? 24 : isTablet ? 22 : 20,
+                fontWeight: FontWeight.w700,
               ),
             ),
-            20.heightBox,
-            _buildOptionItem(Icons.favorite_outline, 'Add to Favorites'),
-            _buildOptionItem(Icons.collections_outlined, 'Add to Collection'),
-            _buildOptionItem(Icons.info_outline, 'View Details'),
+            SizedBox(height: isDesktop ? 28 : isTablet ? 24 : 20),
+            _buildOptionItem(Icons.favorite_outline_rounded, 'Add to Favorites', size),
+            _buildOptionItem(Icons.collections_outlined, 'Add to Collection', size),
+            _buildOptionItem(Icons.info_outline_rounded, 'View Details', size),
             if (_photoType == 'video' && _videoLoadFailed)
-              _buildOptionItem(Icons.refresh, 'Retry Video Load'),
-            _buildOptionItem(Icons.report_outlined, 'Report'),
-            16.heightBox,
+              _buildOptionItem(Icons.refresh_rounded, 'Retry Video Load', size),
+            _buildOptionItem(Icons.report_outlined, 'Report', size),
+            SizedBox(height: MediaQuery.of(context).padding.bottom),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildOptionItem(IconData icon, String title) {
+  Widget _buildOptionItem(IconData icon, String title, Size size) {
+    final isTablet = size.width > 600;
+    final isDesktop = size.width > 1024;
+
     return GestureDetector(
       onTap: () {
         Navigator.pop(context);
         if (title == 'Retry Video Load') {
           _initializeVideoPlayer();
-        } else if (title == 'Home Screen') {
-          _setWallpaper(AsyncWallpaper.HOME_SCREEN);
-        } else if (title == 'Lock Screen') {
-          _setWallpaper(AsyncWallpaper.LOCK_SCREEN);
-        } else if (title == 'Both') {
-          _setWallpaper(AsyncWallpaper.BOTH_SCREENS);
         }
+        // Add other option handlers here
       },
       child: Container(
         width: double.infinity,
-        padding: const EdgeInsets.all(16),
-        margin: const EdgeInsets.only(bottom: 8),
+        padding: EdgeInsets.all(isDesktop ? 20 : isTablet ? 18 : 16),
+        margin: EdgeInsets.only(bottom: isDesktop ? 12 : isTablet ? 10 : 8),
         decoration: BoxDecoration(
-          color: const Color(0xFF27272a),
-          borderRadius: BorderRadius.circular(12),
+          gradient: LinearGradient(
+            colors: [
+              const Color(0xFF27272a).withOpacity(0.8),
+              const Color(0xFF1a1a1e).withOpacity(0.6),
+            ],
+          ),
+          borderRadius: BorderRadius.circular(isDesktop ? 16 : isTablet ? 14 : 12),
+          border: Border.all(
+            color: Colors.white.withOpacity(0.1),
+            width: 1,
+          ),
         ),
         child: Row(
           children: [
-            Icon(icon, color: Colors.white, size: 24),
-            16.widthBox,
-            Text(
-              title,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 16,
-                fontWeight: FontWeight.w500,
+            Icon(
+              icon,
+              color: Colors.white,
+              size: isDesktop ? 26 : isTablet ? 24 : 22,
+            ),
+            SizedBox(width: isDesktop ? 20 : isTablet ? 18 : 16),
+            Expanded(
+              child: Text(
+                title,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: isDesktop ? 18 : isTablet ? 16 : 14,
+                  fontWeight: FontWeight.w500,
+                ),
               ),
+            ),
+            Icon(
+              Icons.arrow_forward_ios_rounded,
+              color: const Color(0xFF71717a),
+              size: isDesktop ? 18 : isTablet ? 16 : 14,
             ),
           ],
         ),

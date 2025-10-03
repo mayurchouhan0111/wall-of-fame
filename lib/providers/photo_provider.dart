@@ -626,4 +626,290 @@ class PhotoProvider with ChangeNotifier {
       await _fetchPhotos(url, isNewSearch: false);
     }
   }
+
+
+  // Add these methods to your PhotoProvider class
+
+  /// MISSING METHOD 1: Set generating state
+  void setGenerating(bool isGenerating) {
+    _isGenerating = isGenerating;
+    notifyListeners();
+  }
+
+  /// MISSING METHOD 2: Add generated photo to the list
+  void addGeneratedPhoto(Photo photo) {
+    _generatedPhotos.insert(0, photo);
+    _totalResults = _generatedPhotos.length;
+    notifyListeners();
+  }
+
+  /// MISSING METHOD 3: Cache image data for future use
+  void cacheImageData(String url, Uint8List data) {
+    _imageDataCache[url] = data;
+  }
+
+  /// MISSING METHOD 4: Simple single image generation for AI screen
+  Future<void> generateSingleImage(String prompt) async {
+    if (prompt.trim().isEmpty) {
+      _error = 'Please enter a prompt for image generation';
+      notifyListeners();
+      return;
+    }
+
+    setGenerating(true);
+    _error = null;
+
+    try {
+      final enhancedPrompt = '$prompt, high quality wallpaper, detailed, masterpiece';
+
+      // Try Pollinations first (most reliable)
+      try {
+        await _generateWithPollinations(enhancedPrompt);
+        print('Successfully generated single image with Pollinations');
+      } catch (e) {
+        print('Pollinations failed, trying DeepAI: $e');
+        try {
+          await _generateWithDeepAI(enhancedPrompt);
+          print('Successfully generated single image with DeepAI');
+        } catch (e2) {
+          print('DeepAI failed, trying HuggingFace: $e2');
+          await _generateWithHuggingFace(enhancedPrompt);
+          print('Successfully generated single image with HuggingFace');
+        }
+      }
+
+      if (_generatedPhotos.isEmpty) {
+        _error = 'Failed to generate image. Please try again.';
+      }
+
+    } on SocketException {
+      _error = 'No Internet connection. Please check your network.';
+    } catch (e) {
+      _error = 'Generation failed: ${e.toString()}';
+      print('Single generation exception: $e');
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  /// MISSING METHOD 5: Enhanced batch generation (improved version)
+  Future<void> generateImageBatch(String prompt, {int count = 4}) async {
+    if (prompt.trim().isEmpty) {
+      _error = 'Please enter a prompt for image generation';
+      notifyListeners();
+      return;
+    }
+
+    setGenerating(true);
+    _error = null;
+
+    int successfulGenerations = 0;
+    const maxRetries = 2;
+
+    try {
+      // Generate multiple variations with different approaches
+      for (int i = 0; i < count; i++) {
+        // Add variety to prompts
+        final variations = [
+          '$prompt, masterpiece, best quality',
+          '$prompt, high resolution, detailed',
+          '$prompt, artistic, beautiful',
+          '$prompt, professional, stunning',
+        ];
+
+        final enhancedPrompt = variations[i % variations.length];
+
+        // Rotate between providers for variety
+        if (i % 3 == 0) {
+          // Try Pollinations with retry
+          for (int retry = 0; retry < maxRetries; retry++) {
+            try {
+              await _generateWithPollinations(enhancedPrompt, attempt: retry + 1);
+              successfulGenerations++;
+              break;
+            } catch (e) {
+              if (retry == maxRetries - 1) {
+                print('Pollinations failed after $maxRetries attempts');
+              }
+              await Future.delayed(Duration(seconds: retry + 2));
+            }
+          }
+        } else if (i % 3 == 1) {
+          // Try DeepAI
+          try {
+            await _generateWithDeepAI(enhancedPrompt);
+            successfulGenerations++;
+          } catch (e) {
+            print('DeepAI failed: $e');
+          }
+        } else {
+          // Try HuggingFace
+          try {
+            await _generateWithHuggingFace(enhancedPrompt);
+            successfulGenerations++;
+          } catch (e) {
+            print('HuggingFace failed: $e');
+          }
+        }
+
+        // Delay between generations to avoid rate limits
+        if (i < count - 1) {
+          await Future.delayed(const Duration(seconds: 3));
+        }
+      }
+
+      _totalResults = _generatedPhotos.length;
+
+      if (successfulGenerations == 0) {
+        _error = 'Failed to generate images. Please check your internet connection and try again.';
+      } else {
+        print('Successfully generated $successfulGenerations/$count images');
+      }
+
+    } on SocketException {
+      _error = 'No Internet connection. Please check your network.';
+    } catch (e) {
+      _error = 'Generation failed: ${e.toString()}';
+      print('Batch generation exception: $e');
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  /// MISSING METHOD 6: Get generation statistics
+  Map<String, dynamic> getGenerationStats() {
+    return {
+      'total_generated': _generatedPhotos.length,
+      'cache_size': _imageDataCache.length,
+      'selected_model': _selectedModel,
+      'selected_size': _selectedSize,
+      'is_generating': _isGenerating,
+      'last_error': _error,
+    };
+  }
+
+  /// MISSING METHOD 7: Clean up old generated images (memory management)
+  void cleanupOldGenerations({int maxKeep = 50}) {
+    if (_generatedPhotos.length > maxKeep) {
+      final toRemove = _generatedPhotos.length - maxKeep;
+      final removedPhotos = _generatedPhotos.sublist(_generatedPhotos.length - toRemove);
+
+      // Remove from cache
+      for (final photo in removedPhotos) {
+        _imageDataCache.remove(photo.src.original);
+      }
+
+      // Keep only the most recent ones
+      _generatedPhotos = _generatedPhotos.take(maxKeep).toList();
+      _totalResults = _generatedPhotos.length;
+
+      notifyListeners();
+      print('Cleaned up $toRemove old generated images');
+    }
+  }
+
+  /// MISSING METHOD 8: Retry failed generation
+  Future<void> retryGeneration(String prompt) async {
+    // Clear any previous errors
+    _error = null;
+
+    // Try single image generation with retry logic
+    await generateSingleImage(prompt);
+  }
+
+  /// MISSING METHOD 9: Get available AI providers
+  List<Map<String, dynamic>> getAvailableProviders() {
+    return _aiProviders.entries
+        .where((entry) => entry.value['active'] == true)
+        .map((entry) => {
+      'id': entry.key,
+      'name': entry.value['name'],
+      'active': entry.value['active'],
+    })
+        .toList();
+  }
+
+  /// MISSING METHOD 10: Set active AI provider
+  void setActiveProvider(String providerId) {
+    if (_aiProviders.containsKey(providerId)) {
+      _selectedProvider = providerId;
+      notifyListeners();
+      print('Switched to AI provider: ${_aiProviders[providerId]!['name']}');
+    }
+  }
+
+  /// MISSING METHOD 11: Validate and sanitize prompt
+  String sanitizePrompt(String prompt) {
+    return prompt
+        .trim()
+        .replaceAll(RegExp(r'[^\w\s\-\.,!?]'), '') // Remove special chars except basic punctuation
+        .replaceAll(RegExp(r'\s+'), ' ') // Multiple spaces to single space
+        .toLowerCase()
+        .split(' ')
+        .take(50) // Limit to 50 words
+        .join(' ');
+  }
+
+  /// MISSING METHOD 12: Get generation history
+  List<Map<String, dynamic>> getGenerationHistory() {
+    return _generatedPhotos.map((photo) => {
+      'id': photo.id,
+      'prompt': photo.alt ?? 'Unknown prompt',
+      'photographer': photo.photographer,
+      'timestamp': photo.id, // Using ID as timestamp
+      'width': photo.width,
+      'height': photo.height,
+    }).toList();
+  }
+
+  /// MISSING METHOD 13: Export generated image data
+  Future<Map<String, dynamic>> exportGeneratedImage(Photo photo) async {
+    final imageData = _imageDataCache[photo.src.original];
+
+    return {
+      'id': photo.id,
+      'prompt': photo.alt ?? 'Unknown',
+      'photographer': photo.photographer,
+      'width': photo.width,
+      'height': photo.height,
+      'has_data': imageData != null,
+      'data_size': imageData?.length ?? 0,
+      'created_at': DateTime.fromMillisecondsSinceEpoch(photo.id).toIso8601String(),
+    };
+  }
+
+  /// MISSING METHOD 14: Clear specific generated image
+  void removeGeneratedImage(int photoId) {
+    final index = _generatedPhotos.indexWhere((photo) => photo.id == photoId);
+
+    if (index != -1) {
+      final photo = _generatedPhotos[index];
+
+      // Remove from cache
+      _imageDataCache.remove(photo.src.original);
+
+      // Remove from list
+      _generatedPhotos.removeAt(index);
+      _totalResults = _generatedPhotos.length;
+
+      notifyListeners();
+      print('Removed generated image: $photoId');
+    }
+  }
+
+  /// MISSING METHOD 15: Enhanced error handling for generation
+  void handleGenerationError(String error, {String? provider}) {
+    final timestamp = DateTime.now().toIso8601String();
+    final errorMessage = provider != null
+        ? '$provider generation failed: $error'
+        : 'Generation failed: $error';
+
+    _error = errorMessage;
+
+    // Log detailed error for debugging
+    print('[$timestamp] $errorMessage');
+
+    notifyListeners();
+  }
+
 }
